@@ -84,7 +84,7 @@ void enable_flash_crm()
 
 void setup_picosoc(void){
 	reg_uart_clkdiv = 104; // Baud = 1152060
-    reg_7seg = 0x00;       // represents GB3 2026
+	reg_7seg = 0x08;       // represents GB3 2026
 	reg_leds = 0x00;
 	set_flash_qspi_flag();
 
