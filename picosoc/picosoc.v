@@ -106,6 +106,11 @@ module picosoc (
 	wire spimem_ready;
 	wire [31:0] spimem_rdata;
 
+	wire spimem_cache_valid;
+	wire spimem_cache_ready;
+	wire [23:0] spimem_cache_addr;
+	wire [31:0] spimem_cache_rdata;
+
 	reg ram_ready;
 	wire [31:0] ram_rdata;
 
@@ -124,10 +129,10 @@ module picosoc (
 	wire [31:0] simpleuart_reg_dat_do;
 	wire        simpleuart_reg_dat_wait;
 
-	assign mem_ready = (iomem_valid && iomem_ready) || spimem_ready || ram_ready || spimemio_cfgreg_sel ||
+	assign mem_ready = (iomem_valid && iomem_ready) || spimem_cache_ready || ram_ready || spimemio_cfgreg_sel ||
 			simpleuart_reg_div_sel || (simpleuart_reg_dat_sel && !simpleuart_reg_dat_wait);
 
-	assign mem_rdata = (iomem_valid && iomem_ready) ? iomem_rdata : spimem_ready ? spimem_rdata : ram_ready ? ram_rdata :
+	assign mem_rdata = (iomem_valid && iomem_ready) ? iomem_rdata : spimem_cache_ready ? spimem_cache_rdata : ram_ready ? ram_rdata :
 			spimemio_cfgreg_sel ? spimemio_cfgreg_do : simpleuart_reg_div_sel ? simpleuart_reg_div_do :
 			simpleuart_reg_dat_sel ? simpleuart_reg_dat_do : 32'h 0000_0000;
 
@@ -156,12 +161,27 @@ module picosoc (
 		.irq         (irq        )
 	);
 
+	spimem_cache_foward spimem_cache (
+		.clk           (clk),
+		.resetn        (resetn),
+
+		.cpu_valid     (mem_valid && mem_addr >= 4*MEM_WORDS && mem_addr < 32'h 0200_0000),
+		.cpu_ready     (spimem_cache_ready),
+		.cpu_addr      (mem_addr[23:0]),
+		.cpu_rdata     (spimem_cache_rdata),
+
+		.spimem_valid  (spimem_cache_valid),
+		.spimem_ready  (spimem_ready),
+		.spimem_addr   (spimem_cache_addr),
+		.spimem_rdata  (spimem_rdata)
+	);
+
 	spimemio spimemio (
 		.clk    (clk),
 		.resetn (resetn),
-		.valid  (mem_valid && mem_addr >= 4*MEM_WORDS && mem_addr < 32'h 0200_0000),
+		.valid  (spimem_cache_valid),
 		.ready  (spimem_ready),
-		.addr   (mem_addr[23:0]),
+		.addr   (spimem_cache_addr),
 		.rdata  (spimem_rdata),
 
 		.flash_csb    (flash_csb   ),
@@ -219,6 +239,32 @@ module picosoc (
 	);
 endmodule
 
+// This is a simple cache that forwards read requests from the CPU to the SPI flash.
+module spimem_cache_foward (
+	input clk,
+	input resetn,
+
+	input         cpu_valid, // request from CPU to read data
+	output        cpu_ready, // data is ready to be read by the CPU
+	input  [23:0] cpu_addr,	// address to read from
+	output [31:0] cpu_rdata, // data read by the CPU
+
+	output        spimem_valid, // request read from SPI flash
+	input         spimem_ready, // SPI flash is ready with data
+	output [23:0] spimem_addr, // address to read from SPI flash
+	input  [31:0] spimem_rdata // data read from SPI flash
+);
+	wire cache_hit = 1'b0;
+
+	assign spimem_valid = cpu_valid && !cache_hit;
+	assign spimem_addr = cpu_addr;
+
+	assign cpu_ready = cpu_valid && (cache_hit || spimem_ready);
+	assign cpu_rdata = cache_hit ? 32'h 0000_0000 : spimem_rdata;
+endmodule
+
+
+
 // Implementation note:
 // Replace the following two modules with wrappers for your SRAM cells.
 
@@ -259,4 +305,3 @@ module picosoc_mem #(
 		if (wen[3]) mem[addr][31:24] <= wdata[31:24];
 	end
 endmodule
-
