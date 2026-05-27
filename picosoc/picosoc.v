@@ -161,7 +161,7 @@ module picosoc (
 		.irq         (irq        )
 	);
 
-	spimem_cache_foward spimem_cache (
+	spimem_cache_direct_mapped spimem_cache (
 		.clk           (clk),
 		.resetn        (resetn),
 
@@ -263,6 +263,44 @@ module spimem_cache_foward (
 	assign cpu_rdata = cache_hit ? 32'h 0000_0000 : spimem_rdata;
 endmodule
 
+module spimem_cache_direct_mapped #(
+	parameter integer CACHE_SIZE = 8 // number of cache lines
+	// TODO: parameter integer LINE_SIZE = 1  // number of words per cache line
+) ( 
+	input clk,
+	input resetn,
+
+	input         cpu_valid, // request from CPU to read data
+	output        cpu_ready, // data is ready to be read by the CPU
+	input  [23:0] cpu_addr,	// address to read from
+	output [31:0] cpu_rdata, // data read by the CPU
+
+	output        spimem_valid, // request read from SPI flash
+	input         spimem_ready, // SPI flash is ready with data
+	output [23:0] spimem_addr, // address to read from SPI flash
+	input  [31:0] spimem_rdata // data read from SPI flash
+);
+	reg [23:0] cache_addr [0:CACHE_SIZE-1];
+	reg [31:0] cache_data [0:CACHE_SIZE-1];
+	reg cache_valid [0:CACHE_SIZE-1];
+
+	wire [2:0] index = cpu_addr[4:2]; // assuming 8 cache lines and 1 word per line
+	wire cache_hit = cache_valid[index] && (cache_addr[index] == cpu_addr);
+
+	assign spimem_valid = cpu_valid && !cache_hit;
+	assign spimem_addr = cpu_addr;
+
+	always @(posedge clk) begin
+		if (spimem_ready) begin
+			cache_addr[index] <= spimem_addr;
+			cache_data[index] <= spimem_rdata;
+			cache_valid[index] <= 1'b1;
+		end
+	end
+
+	assign cpu_ready = cpu_valid && (cache_hit || spimem_ready);
+	assign cpu_rdata = cache_hit ? cache_data[index] : spimem_rdata;	
+endmodule
 
 
 // Implementation note:
