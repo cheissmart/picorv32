@@ -240,7 +240,7 @@ module picosoc (
 endmodule
 
 // This is a simple cache that forwards read requests from the CPU to the SPI flash.
-module spimem_cache_foward (
+module spimem_cache_forward (
 	input clk,
 	input resetn,
 
@@ -264,8 +264,8 @@ module spimem_cache_foward (
 endmodule
 
 module spimem_cache_direct_mapped #(
-	parameter integer CACHE_SIZE = 8 // number of cache lines
-	// TODO: parameter integer LINE_SIZE = 1  // number of words per cache line
+	parameter integer CACHE_SIZE = 8, // number of cache lines
+	parameter integer LINE_SIZE = 1   // number of words per cache line
 ) ( 
 	input clk,
 	input resetn,
@@ -280,26 +280,71 @@ module spimem_cache_direct_mapped #(
 	output [23:0] spimem_addr, // address to read from SPI flash
 	input  [31:0] spimem_rdata // data read from SPI flash
 );
-	reg [23:0] cache_addr [0:CACHE_SIZE-1];
-	reg [31:0] cache_data [0:CACHE_SIZE-1];
+	localparam integer CACHE_WORDS = CACHE_SIZE * LINE_SIZE;
+
+	reg [31:0] cache_line_addr [0:CACHE_SIZE-1];
+	reg [31:0] cache_data [0:CACHE_WORDS-1];
 	reg cache_valid [0:CACHE_SIZE-1];
 
-	wire [2:0] index = cpu_addr[4:2]; // assuming 8 cache lines and 1 word per line
-	wire cache_hit = cache_valid[index] && (cache_addr[index] == cpu_addr);
+	reg fill_active;
+	reg [31:0] fill_line_addr;
+	reg [31:0] fill_index;
+	reg [31:0] fill_count;
 
-	assign spimem_valid = cpu_valid && !cache_hit;
-	assign spimem_addr = cpu_addr;
+	wire [31:0] cpu_word_addr = cpu_addr[23:2];
+	wire [31:0] cpu_line_addr = cpu_word_addr / LINE_SIZE;
+	wire [31:0] cpu_index = cpu_line_addr % CACHE_SIZE;
+	wire [31:0] cpu_offset = cpu_word_addr % LINE_SIZE;
+	wire [31:0] cpu_cache_word = cpu_index * LINE_SIZE + cpu_offset;
 
+	wire cache_hit = cache_valid[cpu_index] && (cache_line_addr[cpu_index] == cpu_line_addr);
+
+	wire start_fill = cpu_valid && !cache_hit && !fill_active;
+	wire [31:0] fill_cur_line_addr = fill_active ? fill_line_addr : cpu_line_addr;
+	wire [31:0] fill_cur_index = fill_active ? fill_index : cpu_index;
+	wire [31:0] fill_cur_count = fill_active ? fill_count : 0;
+	wire [31:0] fill_cur_cache_word = fill_cur_index * LINE_SIZE + fill_cur_count;
+	wire [31:0] fill_cur_spimem_word_addr = fill_cur_line_addr * LINE_SIZE + fill_cur_count;
+
+	assign spimem_valid = fill_active || start_fill;
+	assign spimem_addr = {fill_cur_spimem_word_addr[21:0], 2'b00};
+
+	integer i;
 	always @(posedge clk) begin
-		if (spimem_ready) begin
-			cache_addr[index] <= spimem_addr;
-			cache_data[index] <= spimem_rdata;
-			cache_valid[index] <= 1'b1;
+		if (!resetn) begin
+			fill_active <= 1'b0;
+			for (i = 0; i < CACHE_SIZE; i = i + 1)
+				cache_valid[i] <= 1'b0;
+		end else begin
+			if (start_fill)
+				cache_valid[cpu_index] <= 1'b0;
+
+			if (spimem_valid && spimem_ready) begin
+				cache_data[fill_cur_cache_word] <= spimem_rdata;
+
+				if (fill_cur_count == LINE_SIZE-1) begin
+					cache_line_addr[fill_cur_index] <= fill_cur_line_addr;
+					cache_valid[fill_cur_index] <= 1'b1;
+					fill_active <= 1'b0;
+				end else begin
+					fill_active <= 1'b1;
+					fill_line_addr <= fill_cur_line_addr;
+					fill_index <= fill_cur_index;
+					fill_count <= fill_cur_count + 1;
+				end
+			end else if (start_fill) begin
+				fill_active <= 1'b1;
+				fill_line_addr <= cpu_line_addr;
+				fill_index <= cpu_index;
+				fill_count <= 0;
+			end
 		end
 	end
 
-	assign cpu_ready = cpu_valid && (cache_hit || spimem_ready);
-	assign cpu_rdata = cache_hit ? cache_data[index] : spimem_rdata;	
+	assign cpu_ready = cpu_valid && (cache_hit ||
+			(spimem_valid && spimem_ready && fill_cur_count == LINE_SIZE-1));
+	assign cpu_rdata = cache_hit ? cache_data[cpu_cache_word] :
+			(cpu_offset == fill_cur_count ? spimem_rdata : cache_data[cpu_cache_word]);
 endmodule
 
 
